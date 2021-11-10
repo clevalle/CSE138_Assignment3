@@ -1,0 +1,5 @@
+function to find value in golang array (but modified to return index or -1 if not found)
+https://stackoverflow.com/questions/15323767/does-go-have-if-x-in-construct-similar-to-python
+
+rearranging array to account for removed value
+https://stackoverflow.com/questions/37334119/how-to-delete-an-element-from-a-slice-in-golang

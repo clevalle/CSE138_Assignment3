@@ -12,6 +12,8 @@ import (
 var replicaArray []string
 var replicaCount = 0
 
+const replicaIDIndex = 3
+
 var vectorIndex = -1
 
 var localVector = [4]int{0, 0, 0, -1}
@@ -81,77 +83,82 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	reqVector := reqVals["causal-metadata"].([]int)
+	metadata := reqVals["causal-metadata"]
 
-	if reqVector != nil {
+	if metadata != nil {
+		metadataInterface := metadata.([]interface{})
+		reqVector := make([]int, len(metadataInterface))
+		for i := range metadataInterface {
+			reqVector[i] = int(metadataInterface[i].(float64))
+		}
 		for i := 0; i < len(localVector); i++ {
-			if i == reqVector[3] {
+			if i == reqVector[replicaIDIndex] {
 				if localVector[i]+1 != reqVector[i] {
 					//consistency violation
+					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
 			} else if reqVector[i] > localVector[i] {
 				//consistency violation
+				response["error"] = "Causal dependencies not satisfied; try again later"
 			}
 		}
 	} else {
-		/*
-			// PUT case
-			if req.Method == "PUT" {
+		// PUT case
+		if req.Method == "PUT" {
 
-				val := reqVals["value"]
+			val := reqVals["value"]
 
-				// handling cases where user input is:
-				// 1. invalid (key too long)
-				// 2. invalid (no value specified)
-				// 3. being replaced (key already exists)
-				// 4. being created (key does not exist)
-				if len(key) > 50 {
-					w.WriteHeader(http.StatusBadRequest)
-					response["error"] = "Key is too long"
-				} else if val == nil {
-					w.WriteHeader(http.StatusBadRequest)
-					response["error"] = "PUT request does not specify a value"
-				} else if _, ok := store[key]; ok {
-					w.WriteHeader(http.StatusOK)
-					response["result"] = "updated"
-					store[key] = val
-				} else {
-					w.WriteHeader(http.StatusCreated)
-					response["result"] = "created"
-					store[key] = val
-				}
-
-				// GET case
-			} else if req.Method == "GET" {
-
-				// handling cases where user input is:
-				// 1. valid (key exists)
-				// 2. invalid (key does not exist)
-				if _, ok := store[key]; ok {
-					w.WriteHeader(http.StatusOK)
-					response["result"] = "found"
-					response["value"] = store[key]
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-					response["error"] = "Key does not exist"
-				}
-
-				// DELETE case
-			} else if req.Method == "DELETE" {
-
-				// handling cases where user input is;
-				// 1. valid (key exists)
-				// 2. invalid (key does not exist)
-				if _, ok := store[key]; ok {
-					w.WriteHeader(http.StatusOK)
-					response["result"] = "deleted"
-					delete(store, key)
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-					response["error"] = "Key does not exist"
-				}
+			// handling cases where user input is:
+			// 1. invalid (key too long)
+			// 2. invalid (no value specified)
+			// 3. being replaced (key already exists)
+			// 4. being created (key does not exist)
+			if len(key) > 50 {
+				w.WriteHeader(http.StatusBadRequest)
+				response["error"] = "Key is too long"
+			} else if val == nil {
+				w.WriteHeader(http.StatusBadRequest)
+				response["error"] = "PUT request does not specify a value"
+			} else if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "updated"
+				store[key] = val
+			} else {
+				w.WriteHeader(http.StatusCreated)
+				response["result"] = "created"
+				store[key] = val
 			}
-		*/
+
+			// GET case
+		} else if req.Method == "GET" {
+
+			// handling cases where user input is:
+			// 1. valid (key exists)
+			// 2. invalid (key does not exist)
+			if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "found"
+				response["value"] = store[key]
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				response["error"] = "Key does not exist"
+			}
+
+			// DELETE case
+		} else if req.Method == "DELETE" {
+
+			// handling cases where user input is;
+			// 1. valid (key exists)
+			// 2. invalid (key does not exist)
+			if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "deleted"
+				delete(store, key)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				response["error"] = "Key does not exist"
+			}
+		}
 	}
 	// sending correct response / status code back to client
 	jsonResponse, err := json.Marshal(response)

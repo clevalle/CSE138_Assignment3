@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 var replicaArray []string
 var replicaCount = 0
+var sAddress = string
 
 const replicaIDIndex = 3
 
@@ -48,7 +50,6 @@ func main() {
 
 	//update the view to hold the three current replica addresses
 	vAddresses := os.Getenv("VIEW")
-
 	replicaArray = strings.Split(vAddresses, ",")
 
 	if len(replicaArray) > 0 {
@@ -69,6 +70,38 @@ func isDatabaseChanged(response map[string]interface{}) bool {
 	if _, ok := response["result"]; ok {
 		val := response["result"]
 		if val == "created" || val == "updated" || val == "deleted" {
+			return true
+		}
+	}
+	return false
+}
+
+func broadcastMessage(replicaIP string, req *http.Request) {
+
+	client := &http.Client{}
+
+	// Creating new request to be forwarded
+	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), req.Body)
+	if err != nil {
+		log.Fatalf("Error: %s", err)
+		return
+	}
+
+	// Forwarding the new request
+	resp, err := client.Do(req)
+
+	// Closing body of resp, typical after using Client.do()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
+		//handle eventual consistency
+	}
+
+}
+
+func isInReplicaArray(addr string) bool {
+	for _, viewIP := range replicaArray {
+		if viewIP == addr {
 			return true
 		}
 	}
@@ -191,6 +224,14 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		//check req.remoteaddr if its in view we know req was from replica, if not it was from client
 		//if from client we need to broadcast req to other replicas
 		//if from replica, we need to ack
+		if !isInReplicaArray(req.RemoteAddr) {
+			//broadcast to other replicas
+			for _, replicaIP := range replicaArray {
+				if replicaIP != sAddress {
+					broadcastMessage(replicaIP, req)
+				}
+			}
+		}
 	}
 
 	// sending correct response / status code back to client

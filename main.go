@@ -13,7 +13,7 @@ import (
 
 var replicaArray []string
 var replicaCount = 0
-var sAddress = string
+var sAddress = ""
 
 const replicaIDIndex = 3
 
@@ -27,8 +27,8 @@ func main() {
 	r := mux.NewRouter()
 
 	//testing purposes
-	os.Setenv("SOCKET_ADDRESS", "10.10.0.2:8090")
-	os.Setenv("VIEW", "10.10.0.2:8090,10.10.0.3:8090,10.10.0.4:8090")
+	//os.Setenv("SOCKET_ADDRESS", "10.10.0.2:8090")
+	//os.Setenv("VIEW", "10.10.0.2:8090,10.10.0.3:8090,10.10.0.4:8090")
 
 	//pulls unique replica address from env variable
 	sAddress := os.Getenv("SOCKET_ADDRESS")
@@ -79,6 +79,8 @@ func isDatabaseChanged(response map[string]interface{}) bool {
 func broadcastMessage(replicaIP string, req *http.Request) {
 
 	client := &http.Client{}
+	fmt.Println("req method:")
+	fmt.Println(req.Method)
 
 	// Creating new request to be forwarded
 	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), req.Body)
@@ -90,8 +92,15 @@ func broadcastMessage(replicaIP string, req *http.Request) {
 	// Forwarding the new request
 	resp, err := client.Do(req)
 
+	if err != nil {
+		log.Fatalf("Error: %s", err)
+		return
+	}
 	// Closing body of resp, typical after using Client.do()
 	defer resp.Body.Close()
+
+	fmt.Println("resp status:")
+	fmt.Println(resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
 		//handle eventual consistency

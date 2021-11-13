@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -22,6 +23,10 @@ var store = make(map[string]interface{})
 
 func main() {
 	r := mux.NewRouter()
+
+	//testing purposes
+	os.Setenv("SOCKET_ADDRESS", "10.10.0.2:8090")
+	os.Setenv("VIEW", "10.10.0.2:8090,10.10.0.3:8090,10.10.0.4:8090")
 
 	//pulls unique replica address from env variable
 	sAddress := os.Getenv("SOCKET_ADDRESS")
@@ -42,6 +47,13 @@ func main() {
 	}
 
 	//update the view to hold the three current replica addresses
+	vAddresses := os.Getenv("VIEW")
+
+	replicaArray = strings.Split(vAddresses, ",")
+
+	if len(replicaArray) > 0 {
+
+	}
 
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
@@ -49,6 +61,18 @@ func main() {
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func isDatabaseChanged(response map[string]interface{}) bool {
+
+	//check if a value actually got added to db, and if so we need to alert the other replicas
+	if _, ok := response["result"]; ok {
+		val := response["result"]
+		if val == "created" || val == "updated" || val == "deleted" {
+			return true
+		}
+	}
+	return false
 }
 
 func containsVal(val string, repArray []string) int {
@@ -91,9 +115,9 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		for i := range metadataInterface {
 			reqVector[i] = int(metadataInterface[i].(float64))
 		}
-		for i := 0; i < len(localVector); i++ {
+		for i := 0; i < len(localVector)-1; i++ {
 			if i == reqVector[replicaIDIndex] {
-				if localVector[i]+1 != reqVector[i] {
+				if reqVector[i] != localVector[i]+1 {
 					//consistency violation
 					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
@@ -103,63 +127,72 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	} else {
-		// PUT case
-		if req.Method == "PUT" {
+		localVector[replicaIDIndex] = vectorIndex
+	}
 
-			val := reqVals["value"]
+	// PUT case
+	if req.Method == "PUT" {
 
-			// handling cases where user input is:
-			// 1. invalid (key too long)
-			// 2. invalid (no value specified)
-			// 3. being replaced (key already exists)
-			// 4. being created (key does not exist)
-			if len(key) > 50 {
-				w.WriteHeader(http.StatusBadRequest)
-				response["error"] = "Key is too long"
-			} else if val == nil {
-				w.WriteHeader(http.StatusBadRequest)
-				response["error"] = "PUT request does not specify a value"
-			} else if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "updated"
-				store[key] = val
-			} else {
-				w.WriteHeader(http.StatusCreated)
-				response["result"] = "created"
-				store[key] = val
-			}
+		val := reqVals["value"]
 
-			// GET case
-		} else if req.Method == "GET" {
+		// handling cases where user input is:
+		// 1. invalid (key too long)
+		// 2. invalid (no value specified)
+		// 3. being replaced (key already exists)
+		// 4. being created (key does not exist)
+		if len(key) > 50 {
+			w.WriteHeader(http.StatusBadRequest)
+			response["error"] = "Key is too long"
+		} else if val == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			response["error"] = "PUT request does not specify a value"
+		} else if _, ok := store[key]; ok {
+			w.WriteHeader(http.StatusOK)
+			response["result"] = "updated"
+			store[key] = val
+		} else {
+			w.WriteHeader(http.StatusCreated)
+			response["result"] = "created"
+			store[key] = val
+		}
 
-			// handling cases where user input is:
-			// 1. valid (key exists)
-			// 2. invalid (key does not exist)
-			if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "found"
-				response["value"] = store[key]
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				response["error"] = "Key does not exist"
-			}
+		// GET case
+	} else if req.Method == "GET" {
 
-			// DELETE case
-		} else if req.Method == "DELETE" {
+		// handling cases where user input is:
+		// 1. valid (key exists)
+		// 2. invalid (key does not exist)
+		if _, ok := store[key]; ok {
+			w.WriteHeader(http.StatusOK)
+			response["result"] = "found"
+			response["value"] = store[key]
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			response["error"] = "Key does not exist"
+		}
 
-			// handling cases where user input is;
-			// 1. valid (key exists)
-			// 2. invalid (key does not exist)
-			if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "deleted"
-				delete(store, key)
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				response["error"] = "Key does not exist"
-			}
+		// DELETE case
+	} else if req.Method == "DELETE" {
+
+		// handling cases where user input is;
+		// 1. valid (key exists)
+		// 2. invalid (key does not exist)
+		if _, ok := store[key]; ok {
+			w.WriteHeader(http.StatusOK)
+			response["result"] = "deleted"
+			delete(store, key)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+			response["error"] = "Key does not exist"
 		}
 	}
+
+	if isDatabaseChanged(response) {
+		//check req.remoteaddr if its in view we know req was from replica, if not it was from client
+		//if from client we need to broadcast req to other replicas
+		//if from replica, we need to ack
+	}
+
 	// sending correct response / status code back to client
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {

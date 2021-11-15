@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,15 +12,39 @@ import (
 	"github.com/gorilla/mux"
 )
 
+type message struct {
+	Value          interface{}  `json:"value"`
+	CausalMetadata *ReqMetaData `json:"causal-metadata"`
+}
+
+type ReqMetaData struct {
+	ReqVector       [3]int `json:"ReqVector, omitempty"`
+	ReqIpIndex      int    `json:"ReqIpIndex, omitempty"`
+	IsReqFromClient bool   `json:"IsReqFromClient, omitempty"`
+}
+
 var replicaArray []string
 var replicaCount = 0
-var sAddress = ""
-
-const replicaIDIndex = 3
+var sAddress string
 
 var vectorIndex = -1
 
-var localVector = [4]int{0, 0, 0, -1}
+// first 3 integers represent the vector clock of the local replica
+// 4th vector is the index of the Ip that all replicas have access to
+// 5th vector is the binary toggle (1 or 0) that determines if the data was from a client (1) or a replica (0)
+var localVector = [3]int{0, 0, 0}
+
+var ipToIndex = map[string]int{
+	"10.10.0.2:8090": 0,
+	"10.10.0.3:8090": 1,
+	"10.10.0.4:8090": 2,
+}
+
+var indexToIp = map[int]string{
+	0: "10.10.0.2:8090",
+	1: "10.10.0.3:8090",
+	2: "10.10.0.4:8090",
+}
 
 var store = make(map[string]interface{})
 
@@ -31,7 +56,7 @@ func main() {
 	//os.Setenv("VIEW", "10.10.0.2:8090,10.10.0.3:8090,10.10.0.4:8090")
 
 	//pulls unique replica address from env variable
-	sAddress := os.Getenv("SOCKET_ADDRESS")
+	sAddress = os.Getenv("SOCKET_ADDRESS")
 
 	//sets index for each unique socket address so that vector clock can be incremented correctly
 	//i.e. replica index 0 always increments the first value in the vector (array) and so on
@@ -39,22 +64,15 @@ func main() {
 	//which place to check for a value greater than its own vector clock
 	if sAddress == "10.10.0.2:8090" {
 		vectorIndex = 0
-		localVector[3] = 0
 	} else if sAddress == "10.10.0.3:8090" {
 		vectorIndex = 1
-		localVector[3] = 1
 	} else if sAddress == "10.10.0.4:8090" {
 		vectorIndex = 2
-		localVector[3] = 2
 	}
 
 	//update the view to hold the three current replica addresses
 	vAddresses := os.Getenv("VIEW")
 	replicaArray = strings.Split(vAddresses, ",")
-
-	if len(replicaArray) > 0 {
-
-	}
 
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
@@ -76,14 +94,14 @@ func isDatabaseChanged(response map[string]interface{}) bool {
 	return false
 }
 
-func broadcastMessage(replicaIP string, req *http.Request) {
+func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 
 	client := &http.Client{}
-	fmt.Println("req method:")
-	fmt.Println(req.Method)
+	fmt.Println("req method: ", req.Method)
+	//fmt.Println("replicaIP: ", replicaIP)
 
 	// Creating new request to be forwarded
-	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), req.Body)
+	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(updatedBody))
 	if err != nil {
 		log.Fatalf("Error: %s", err)
 		return
@@ -99,8 +117,16 @@ func broadcastMessage(replicaIP string, req *http.Request) {
 	// Closing body of resp, typical after using Client.do()
 	defer resp.Body.Close()
 
-	fmt.Println("resp status:")
-	fmt.Println(resp.StatusCode)
+	fmt.Println("resp status: ", resp.StatusCode)
+
+	var bodyVals map[string]interface{}
+
+	err = json.NewDecoder(resp.Body).Decode(&bodyVals)
+	if err != nil {
+		log.Fatalf("Error couldnt decode: %s", err)
+		return
+	}
+	fmt.Println("resp.Body ===", bodyVals)
 
 	if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
 		//handle eventual consistency
@@ -108,7 +134,7 @@ func broadcastMessage(replicaIP string, req *http.Request) {
 
 }
 
-func isInReplicaArray(addr string) bool {
+func inReplicaArray(addr string) bool {
 	for _, viewIP := range replicaArray {
 		if viewIP == addr {
 			return true
@@ -137,112 +163,158 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 	param := mux.Vars(req)
 	key := param["key"]
 
+	if len(key) > 0 {
+
+	}
+
 	response := make(map[string]interface{})
+	broadcastResponse := make(map[string]interface{})
+	var responseMetadata ReqMetaData
 
 	// create dict variable to hold inputted value
-	var reqVals map[string]interface{}
+	var reqVals message
 
 	// handles pulling out and storing value into newVal
 	err := json.NewDecoder(req.Body).Decode(&reqVals)
 	if err != nil {
-		log.Fatalf("Error: %s", err)
+		log.Fatalf("Error couldnt decode: %s", err)
 		return
 	}
 
-	metadata := reqVals["causal-metadata"]
+	metadata := reqVals.CausalMetadata
 
 	if metadata != nil {
-		metadataInterface := metadata.([]interface{})
-		reqVector := make([]int, len(metadataInterface))
-		for i := range metadataInterface {
-			reqVector[i] = int(metadataInterface[i].(float64))
-		}
-		for i := 0; i < len(localVector)-1; i++ {
-			if i == reqVector[replicaIDIndex] {
+		reqVector := metadata.ReqVector
+		responseMetadata.IsReqFromClient = metadata.IsReqFromClient
+		fmt.Println("vector clock === ", reqVector)
+		fmt.Println("IP index === ", metadata.ReqIpIndex)
+		fmt.Println("req from client? === ", metadata.IsReqFromClient)
+
+		//check for consistency violations
+		for i := 0; i < len(reqVector); i++ {
+			if i == reqVector[metadata.ReqIpIndex] {
 				if reqVector[i] != localVector[i]+1 {
 					//consistency violation
+					w.WriteHeader(http.StatusBadRequest)
 					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
 			} else if reqVector[i] > localVector[i] {
 				//consistency violation
+				w.WriteHeader(http.StatusBadRequest)
 				response["error"] = "Causal dependencies not satisfied; try again later"
 			}
 		}
-	} else {
-		localVector[replicaIDIndex] = vectorIndex
-	}
 
-	// PUT case
-	if req.Method == "PUT" {
-
-		val := reqVals["value"]
-
-		// handling cases where user input is:
-		// 1. invalid (key too long)
-		// 2. invalid (no value specified)
-		// 3. being replaced (key already exists)
-		// 4. being created (key does not exist)
-		if len(key) > 50 {
-			w.WriteHeader(http.StatusBadRequest)
-			response["error"] = "Key is too long"
-		} else if val == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			response["error"] = "PUT request does not specify a value"
-		} else if _, ok := store[key]; ok {
-			w.WriteHeader(http.StatusOK)
-			response["result"] = "updated"
-			store[key] = val
-		} else {
-			w.WriteHeader(http.StatusCreated)
-			response["result"] = "created"
-			store[key] = val
-		}
-
-		// GET case
-	} else if req.Method == "GET" {
-
-		// handling cases where user input is:
-		// 1. valid (key exists)
-		// 2. invalid (key does not exist)
-		if _, ok := store[key]; ok {
-			w.WriteHeader(http.StatusOK)
-			response["result"] = "found"
-			response["value"] = store[key]
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-			response["error"] = "Key does not exist"
-		}
-
-		// DELETE case
-	} else if req.Method == "DELETE" {
-
-		// handling cases where user input is;
-		// 1. valid (key exists)
-		// 2. invalid (key does not exist)
-		if _, ok := store[key]; ok {
-			w.WriteHeader(http.StatusOK)
-			response["result"] = "deleted"
-			delete(store, key)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-			response["error"] = "Key does not exist"
-		}
-	}
-
-	if isDatabaseChanged(response) {
-		//check req.remoteaddr if its in view we know req was from replica, if not it was from client
-		//if from client we need to broadcast req to other replicas
-		//if from replica, we need to ack
-		if !isInReplicaArray(req.RemoteAddr) {
-			//broadcast to other replicas
-			for _, replicaIP := range replicaArray {
-				if replicaIP != sAddress {
-					broadcastMessage(replicaIP, req)
+		// if no causal dependency is detected, set the local clock to the max of the local clock and request clock
+		if _, violation := response["error"]; !violation {
+			for i := 0; i < len(reqVector); i++ {
+				if reqVector[i] > localVector[i] {
+					localVector[i] = reqVector[i]
 				}
 			}
 		}
+
+	} else {
+		responseMetadata.IsReqFromClient = true
 	}
 
+	if _, violation := response["error"]; !violation {
+		// PUT case
+		if req.Method == "PUT" {
+
+			val := reqVals.Value
+			// handling cases where user input is:
+			// 1. invalid (key too long)
+			// 2. invalid (no value specified)
+			// 3. being replaced (key already exists)
+			// 4. being created (key does not exist)
+			if len(key) > 50 {
+				w.WriteHeader(http.StatusBadRequest)
+				response["error"] = "Key is too long"
+			} else if val == nil {
+				w.WriteHeader(http.StatusBadRequest)
+				response["error"] = "PUT request does not specify a value"
+			} else if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "updated"
+				store[key] = val
+			} else {
+				w.WriteHeader(http.StatusCreated)
+				response["result"] = "created"
+				store[key] = val
+			}
+
+			// GET case
+		} else if req.Method == "GET" {
+
+			// handling cases where user input is:
+			// 1. valid (key exists)
+			// 2. invalid (key does not exist)
+			if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "found"
+				response["value"] = store[key]
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				response["error"] = "Key does not exist"
+			}
+
+			// DELETE case
+		} else if req.Method == "DELETE" {
+
+			// handling cases where user input is;
+			// 1. valid (key exists)
+			// 2. invalid (key does not exist)
+			if _, ok := store[key]; ok {
+				w.WriteHeader(http.StatusOK)
+				response["result"] = "deleted"
+				delete(store, key)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				response["error"] = "Key does not exist"
+			}
+		}
+
+		if metadata == nil || (metadata != nil && metadata.IsReqFromClient) {
+			localVector[vectorIndex]++
+		}
+		//update response to updated clock index and vector clock
+		responseMetadata.ReqVector = localVector
+		responseMetadata.ReqIpIndex = ipToIndex[sAddress]
+
+		fmt.Println("localvector === ", localVector)
+
+		if isDatabaseChanged(response) {
+			//if from client we need to broadcast req to other replicas
+			//if from replica, we dont do anything here
+			if responseMetadata.IsReqFromClient {
+
+				var broadcastMetadata ReqMetaData
+				broadcastMetadata.ReqVector = localVector
+				broadcastMetadata.ReqIpIndex = ipToIndex[sAddress]
+				broadcastMetadata.IsReqFromClient = false
+				broadcastResponse["value"] = reqVals.Value
+				broadcastResponse["causal-metadata"] = broadcastMetadata
+				updatedBody, err := json.Marshal(broadcastResponse)
+				if err != nil {
+					log.Fatalf("response not marshalled: %s", err)
+					return
+				}
+
+				fmt.Println("updated body ===", string(updatedBody))
+
+				//broadcast to other replicas
+				for _, replicaIP := range replicaArray {
+					if replicaIP != sAddress {
+						broadcastMessage(replicaIP, req, updatedBody)
+					}
+				}
+			}
+		}
+
+		//set responses metadata to updated metadata
+		response["causal-metadata"] = responseMetadata
+	}
 	// sending correct response / status code back to client
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {

@@ -97,7 +97,7 @@ func isDatabaseChanged(response map[string]interface{}) bool {
 func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 
 	client := &http.Client{}
-	fmt.Println("req method: ", req.Method)
+	//fmt.Println("req method: ", req.Method)
 	//fmt.Println("replicaIP: ", replicaIP)
 
 	// Creating new request to be forwarded
@@ -183,38 +183,54 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 
 	metadata := reqVals.CausalMetadata
 
+	fmt.Println("localvector on recieve === ", localVector)
+
 	if metadata != nil {
 		reqVector := metadata.ReqVector
 		responseMetadata.IsReqFromClient = metadata.IsReqFromClient
-		fmt.Println("vector clock === ", reqVector)
-		fmt.Println("IP index === ", metadata.ReqIpIndex)
-		fmt.Println("req from client? === ", metadata.IsReqFromClient)
+		fmt.Println("vector clock from request === ", reqVector)
+		//fmt.Println("IP index === ", metadata.ReqIpIndex)
+		//fmt.Println("req from client? === ", metadata.IsReqFromClient)
 
 		//check for consistency violations
 		for i := 0; i < len(reqVector); i++ {
-			if i == reqVector[metadata.ReqIpIndex] {
-				if reqVector[i] != localVector[i]+1 {
+			if metadata.IsReqFromClient {
+				if reqVector[i] > localVector[i] {
 					//consistency violation
+					//fmt.Println("bigger in the ", i, " position")
 					w.WriteHeader(http.StatusBadRequest)
 					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
-			} else if reqVector[i] > localVector[i] {
-				//consistency violation
-				w.WriteHeader(http.StatusBadRequest)
-				response["error"] = "Causal dependencies not satisfied; try again later"
+			} else {
+				if i == metadata.ReqIpIndex {
+					if reqVector[i] != localVector[i]+1 {
+						//consistency violation
+						//fmt.Println("bigger in the metadata.repipindex position: ", reqVector[i], " != ", localVector[i]+1, " when i = ", i)
+						w.WriteHeader(http.StatusBadRequest)
+						response["error"] = "Causal dependencies not satisfied; try again later"
+					}
+				} else if reqVector[i] > localVector[i] {
+					//consistency violation
+					//fmt.Println("bigger in the ", i, " position")
+					w.WriteHeader(http.StatusBadRequest)
+					response["error"] = "Causal dependencies not satisfied; try again later"
+				}
 			}
 		}
 
 		// if no causal dependency is detected, set the local clock to the max of the local clock and request clock
 		if _, violation := response["error"]; !violation {
-			for i := 0; i < len(reqVector); i++ {
-				if reqVector[i] > localVector[i] {
-					localVector[i] = reqVector[i]
+			if req.Method != "GET" {
+				for i := 0; i < len(reqVector); i++ {
+					if reqVector[i] > localVector[i] {
+						localVector[i] = reqVector[i]
+					}
 				}
 			}
 		}
 
 	} else {
+		//handling inital nil case all future client requests will increment local clock when getting the max
 		responseMetadata.IsReqFromClient = true
 	}
 
@@ -275,20 +291,31 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		if metadata == nil || (metadata != nil && metadata.IsReqFromClient) {
-			localVector[vectorIndex]++
-		}
-		//update response to updated clock index and vector clock
-		responseMetadata.ReqVector = localVector
-		responseMetadata.ReqIpIndex = ipToIndex[sAddress]
-
-		fmt.Println("localvector === ", localVector)
-
 		if isDatabaseChanged(response) {
+
+			if responseMetadata.IsReqFromClient {
+				localVector[vectorIndex]++
+			}
+			/*
+				var clientResponseClock = localVector
+				if ((metadata != nil && metadata.IsReqFromClient) || responseMetadata.IsReqFromClient) && req.Method != "GET" {
+					clientResponseClock[vectorIndex]++
+				}
+				if metadata != nil && req.Method == "GET" {
+					responseMetadata.ReqVector = metadata.ReqVector
+				} else {
+					responseMetadata.ReqVector = clientResponseClock
+				}
+			*/
+			//update response to updated clock index
+			responseMetadata.ReqVector = localVector
+			responseMetadata.ReqIpIndex = ipToIndex[sAddress]
+
+			fmt.Println("localvector after request is processed === ", localVector)
+
 			//if from client we need to broadcast req to other replicas
 			//if from replica, we dont do anything here
 			if responseMetadata.IsReqFromClient {
-
 				var broadcastMetadata ReqMetaData
 				broadcastMetadata.ReqVector = localVector
 				broadcastMetadata.ReqIpIndex = ipToIndex[sAddress]

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -77,6 +78,7 @@ func main() {
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
 	r.HandleFunc("/kvs/{key}", handleKey)
+	r.HandleFunc("/down/{flag}", handleDown)
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
@@ -411,4 +413,65 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 	}
 	w.Write(jsonResponse)
 
+}
+
+func handleDown(w http.ResponseWriter, req *http.Request) {
+	// This function is passed in a "flag" parameter
+	// If the flag is set to 0 -- We must send the kvs store as a response
+	// If the flag is set to 1 -- We must get the store from response and copy into local kvs store
+	param := mux.Vars(req)
+	key := param["flag"]
+	intKey, err := strconv.Atoi(key)
+	if err != nil {
+		log.Fatalf("handleDown Atoi Error: %s", err)
+	}
+
+	response := make(map[string]interface{})
+
+	// checking for what the flag is set to
+	if intKey == 0 {
+		// sending out response as our kvs store
+		response["store"] = store
+
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Fatalf("Error here: %s", err)
+		}
+		w.Write(jsonResponse)
+	} else {
+		// looping thru each replicaIP, until we find an IP that is not the current one
+		for _, replicaIP := range replicaArray {
+			if replicaIP != sAddress {
+				// once we find another replicaIP, we send to them a request for the kvs store
+				client := &http.Client{}
+
+				// note that we send the request to the handledown function, with the added 0 flag
+				req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s/0", replicaIP, req.URL.Path), req.Body)
+				if err != nil {
+					fmt.Println(replicaIP, " is down")
+				}
+
+				// Forwarding the new request
+				resp, err := client.Do(req)
+
+				if err != nil {
+					fmt.Println(replicaIP, " is down")
+				}
+
+				// Closing body of resp, typical after using Client.do()
+				if err == nil {
+					defer resp.Body.Close()
+				}
+
+				// grabbing the store from the request we made, and reassigning our local kvs store
+				result := make(map[string]interface{})
+				json.NewDecoder(resp.Body).Decode(&result)
+
+				store = result["store"]
+
+				// break from the for loop, because we only need to make the request once
+				break
+			}
+		}
+	}
 }

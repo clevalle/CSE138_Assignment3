@@ -97,41 +97,42 @@ func isDatabaseChanged(response map[string]interface{}) bool {
 func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 
 	client := &http.Client{}
-	//fmt.Println("req method: ", req.Method)
-	//fmt.Println("replicaIP: ", replicaIP)
+	fmt.Println("req method: ", req.Method)
+	fmt.Println("req URL: ", fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path))
 
 	// Creating new request to be forwarded
 	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(updatedBody))
 	if err != nil {
-		log.Fatalf("Error: %s", err)
-		return
+		fmt.Println(replicaIP, " is down")
 	}
 
 	// Forwarding the new request
 	resp, err := client.Do(req)
 
 	if err != nil {
-		log.Fatalf("Error: %s", err)
-		return
+		fmt.Println(replicaIP, " is down")
 	}
 	// Closing body of resp, typical after using Client.do()
-	defer resp.Body.Close()
-
-	fmt.Println("resp status: ", resp.StatusCode)
-
-	var bodyVals map[string]interface{}
-
-	err = json.NewDecoder(resp.Body).Decode(&bodyVals)
-	if err != nil {
-		log.Fatalf("Error couldnt decode: %s", err)
-		return
-	}
-	fmt.Println("resp.Body ===", bodyVals)
-
-	if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
-		//handle eventual consistency
+	if err == nil {
+		defer resp.Body.Close()
 	}
 
+	/*
+		fmt.Println("resp status: ", resp.StatusCode)
+
+		var bodyVals map[string]interface{}
+
+		err = json.NewDecoder(resp.Body).Decode(&bodyVals)
+		if err != nil {
+			log.Fatalf("Error couldnt decode: %s", err)
+			return
+		}
+		fmt.Println("resp.Body ===", bodyVals)
+
+		if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
+			//handle eventual consistency
+		}
+	*/
 }
 
 func inReplicaArray(addr string) bool {
@@ -198,7 +199,7 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 				if reqVector[i] > localVector[i] {
 					//consistency violation
 					//fmt.Println("bigger in the ", i, " position")
-					w.WriteHeader(http.StatusBadRequest)
+					w.WriteHeader(http.StatusServiceUnavailable)
 					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
 			} else {
@@ -206,13 +207,13 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 					if reqVector[i] != localVector[i]+1 {
 						//consistency violation
 						//fmt.Println("bigger in the metadata.repipindex position: ", reqVector[i], " != ", localVector[i]+1, " when i = ", i)
-						w.WriteHeader(http.StatusBadRequest)
+						w.WriteHeader(http.StatusServiceUnavailable)
 						response["error"] = "Causal dependencies not satisfied; try again later"
 					}
 				} else if reqVector[i] > localVector[i] {
 					//consistency violation
 					//fmt.Println("bigger in the ", i, " position")
-					w.WriteHeader(http.StatusBadRequest)
+					w.WriteHeader(http.StatusServiceUnavailable)
 					response["error"] = "Causal dependencies not satisfied; try again later"
 				}
 			}
@@ -291,27 +292,17 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
+		responseMetadata.ReqVector = localVector
+		responseMetadata.ReqIpIndex = ipToIndex[sAddress]
+
 		if isDatabaseChanged(response) {
 
 			if responseMetadata.IsReqFromClient {
 				localVector[vectorIndex]++
 			}
-			/*
-				var clientResponseClock = localVector
-				if ((metadata != nil && metadata.IsReqFromClient) || responseMetadata.IsReqFromClient) && req.Method != "GET" {
-					clientResponseClock[vectorIndex]++
-				}
-				if metadata != nil && req.Method == "GET" {
-					responseMetadata.ReqVector = metadata.ReqVector
-				} else {
-					responseMetadata.ReqVector = clientResponseClock
-				}
-			*/
+
 			//update response to updated clock index
 			responseMetadata.ReqVector = localVector
-			responseMetadata.ReqIpIndex = ipToIndex[sAddress]
-
-			fmt.Println("localvector after request is processed === ", localVector)
 
 			//if from client we need to broadcast req to other replicas
 			//if from replica, we dont do anything here
@@ -342,12 +333,15 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		//set responses metadata to updated metadata
 		response["causal-metadata"] = responseMetadata
 	}
+	fmt.Println("localvector after request is processed === ", localVector)
+
 	// sending correct response / status code back to client
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {
 		log.Fatalf("Error: %s", err)
 	}
 	w.Write(jsonResponse)
+
 }
 
 func handleView(w http.ResponseWriter, req *http.Request) {
@@ -386,7 +380,7 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 
 	} else if req.Method == "GET" {
 
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusOK)
 		response["view"] = replicaArray
 
 	} else if req.Method == "DELETE" {
@@ -416,4 +410,5 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 		log.Fatalf("Error here: %s", err)
 	}
 	w.Write(jsonResponse)
+
 }

@@ -27,8 +27,11 @@ type ReqMetaData struct {
 var replicaArray []string
 var replicaCount = 0
 var sAddress string
-
+var viewArray []string
 var vectorIndex = -1
+
+const downReplicaPath = "/"
+const aliveCheckConst = true
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -74,15 +77,99 @@ func main() {
 	//update the view to hold the three current replica addresses
 	vAddresses := os.Getenv("VIEW")
 	replicaArray = strings.Split(vAddresses, ",")
+	viewArray = strings.Split(vAddresses, ",")
 
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
 	r.HandleFunc("/kvs/{key}", handleKey)
 	r.HandleFunc("/down/{flag}", handleDown)
+	r.HandleFunc("/getVC", handleGetVC)
+	r.HandleFunc("/getKVS", handleGetKVS)
+
+	//didIDie()
+
+	//go aliveCheck()
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
 }
+
+/*
+func didIDie() {
+	time.Sleep(time.Second)
+	for _, replicaIP := range viewArray {
+		var repVC = getReplicaVectorClock(replicaIP)
+		if repVC != localVector {
+			//set local VC to grabbed VC
+			localVector = repVC
+			//we know we died and need to grab the new KVS and push our Ip to the replica Array
+			store = getReplicaKVS(replicaIP)
+
+		}
+	}
+}
+
+func getReplicaKVS(replicaIP string) map[string]interface{} {
+
+}
+*/
+
+func getReplicaVectorClock(replicaIP string) [3]int {
+	var response map[string]interface{}
+
+	// Creating new request
+	res, err := http.Get(fmt.Sprintf("http://%s/getVC", replicaIP))
+	if err != nil {
+		fmt.Println("problem creating new http request")
+	}
+
+	decodeError := json.NewDecoder(res.Body).Decode(&response)
+	if decodeError != nil {
+		log.Fatalf("Error: %s", err)
+	}
+
+	return response["VC"].([3]int)
+}
+
+/*
+func aliveCheck() {
+	//give other replicas time to start up
+	time.Sleep(1 * time.Second)
+
+	for aliveCheckConst {
+		for _, replicaIP := range viewArray {
+			if !isAlive(replicaIP) {
+				//if down, but still in our view, this is the first time we are seeing this replica go down, so we need to let the other replicas know and let them update accordingly
+				index := containsVal(replicaIP, replicaArray)
+				if index >= 0 {
+					//remove value from our own replica array
+					replicaArray = removeVal(index, replicaArray)
+
+					//send remove to other replica
+					for _, IP := range replicaArray {
+						if IP != sAddress {
+
+						}
+					}
+
+				}
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+}
+
+func isAlive(replicaIP string) bool {
+	reachedURL, err := net.DialTimeout("tcp", replicaIP, (2 * time.Second))
+	if err != nil {
+		fmt.Println(replicaIP, " is down! didnt reply within 2 seconds")
+		return false
+	}
+	reachedURL.Close()
+	return true
+}
+*/
 
 func isDatabaseChanged(response map[string]interface{}) bool {
 
@@ -102,39 +189,21 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	fmt.Println("req method: ", req.Method)
 	fmt.Println("req URL: ", fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path))
 
-	// Creating new request to be forwarded
+	// Creating new request
 	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(updatedBody))
 	if err != nil {
-		fmt.Println(replicaIP, " is down")
+		fmt.Println("problem creating new http request")
 	}
 
 	// Forwarding the new request
 	resp, err := client.Do(req)
-
 	if err != nil {
-		fmt.Println(replicaIP, " is down")
+		fmt.Println(replicaIP, " is down due to: ", err)
+		return
 	}
 	// Closing body of resp, typical after using Client.do()
-	if err == nil {
-		defer resp.Body.Close()
-	}
-
-	/*
-		fmt.Println("resp status: ", resp.StatusCode)
-
-		var bodyVals map[string]interface{}
-
-		err = json.NewDecoder(resp.Body).Decode(&bodyVals)
-		if err != nil {
-			log.Fatalf("Error couldnt decode: %s", err)
-			return
-		}
-		fmt.Println("resp.Body ===", bodyVals)
-
-		if resp.StatusCode != http.StatusOK || resp.StatusCode != http.StatusCreated {
-			//handle eventual consistency
-		}
-	*/
+	defer resp.Body.Close()
+	return
 }
 
 func inReplicaArray(addr string) bool {
@@ -158,6 +227,34 @@ func containsVal(val string, repArray []string) int {
 func removeVal(index int, repArray []string) []string {
 	repArray[index] = repArray[len(repArray)-1]
 	return repArray[:len(repArray)-1]
+}
+
+func handleGetVC(w http.ResponseWriter, req *http.Request) {
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		response["VC"] = localVector
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error: %s", err)
+	}
+	w.Write(jsonResponse)
+}
+
+func handleGetKVS(w http.ResponseWriter, req *http.Request) {
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		response["KVS"] = store
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error: %s", err)
+	}
+	w.Write(jsonResponse)
 }
 
 func handleKey(w http.ResponseWriter, req *http.Request) {
@@ -467,7 +564,7 @@ func handleDown(w http.ResponseWriter, req *http.Request) {
 				result := make(map[string]interface{})
 				json.NewDecoder(resp.Body).Decode(&result)
 
-				store = result["store"]
+				store = result["store"].(map[string]interface{})
 
 				// break from the for loop, because we only need to make the request once
 				break

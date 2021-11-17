@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -22,6 +24,10 @@ type ReqMetaData struct {
 	ReqVector       [3]int `json:"ReqVector, omitempty"`
 	ReqIpIndex      int    `json:"ReqIpIndex, omitempty"`
 	IsReqFromClient bool   `json:"IsReqFromClient, omitempty"`
+}
+
+type VectorClock struct {
+	VC [3]int `json:"VC, omitempty"`
 }
 
 var replicaArray []string
@@ -86,7 +92,7 @@ func main() {
 	r.HandleFunc("/getVC", handleGetVC)
 	r.HandleFunc("/getKVS", handleGetKVS)
 
-	//didIDie()
+	go didIDie()
 
 	//go aliveCheck()
 
@@ -94,31 +100,58 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8090", r))
 }
 
-/*
 func didIDie() {
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 1)
 	for _, replicaIP := range viewArray {
-		var repVC = getReplicaVectorClock(replicaIP)
-		if repVC != localVector {
-			//set local VC to grabbed VC
-			localVector = repVC
-			//we know we died and need to grab the new KVS and push our Ip to the replica Array
-			store = getReplicaKVS(replicaIP)
-
+		if replicaIP != sAddress {
+			var repVC = getReplicaVectorClock(replicaIP)
+			fmt.Println("repVC === ", repVC)
+			if repVC != localVector {
+				//set local VC to grabbed VC
+				localVector = repVC
+				//we know we died and need to grab the new KVS
+				store = getReplicaKVS(replicaIP)
+				//and push our Ip to the replica Array
+				pushIpToReplicas(sAddress)
+			}
 		}
 	}
 }
 
-func getReplicaKVS(replicaIP string) map[string]interface{} {
+func pushIpToReplicas(replicaIP string) {
+	response := make(map[string]string)
+	response["socket-address"] = sAddress
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error here: %s", err)
+	}
+	for _, replicaIP := range replicaArray {
+		if replicaIP != sAddress {
+			client := &http.Client{}
+			// Creating new request
+			req, err := http.NewRequest("PUT", fmt.Sprintf("http://%s/view", replicaIP), bytes.NewBuffer(jsonResponse))
+			if err != nil {
+				fmt.Println("problem creating new http request")
+			}
+
+			// Forwarding the new request
+			resp, err := client.Do(req)
+			if err != nil {
+				fmt.Println(replicaIP, " is down due to: ", err)
+				return
+			}
+			defer resp.Body.Close()
+		}
+	}
 
 }
-*/
 
-func getReplicaVectorClock(replicaIP string) [3]int {
+func getReplicaKVS(replicaIP string) map[string]interface{} {
 	var response map[string]interface{}
 
 	// Creating new request
-	res, err := http.Get(fmt.Sprintf("http://%s/getVC", replicaIP))
+	res, err := http.Get(fmt.Sprintf("http://%s/getKVS", replicaIP))
 	if err != nil {
 		fmt.Println("problem creating new http request")
 	}
@@ -128,7 +161,26 @@ func getReplicaVectorClock(replicaIP string) [3]int {
 		log.Fatalf("Error: %s", err)
 	}
 
-	return response["VC"].([3]int)
+	return response["KVS"].(map[string]interface{})
+}
+
+func getReplicaVectorClock(replicaIP string) [3]int {
+	var response VectorClock
+
+	// Creating new request
+	fmt.Println("replicaIP ==== ", replicaIP)
+	res, err := http.Get(fmt.Sprintf("http://%s/getVC", replicaIP))
+	if err != nil {
+		fmt.Println("problem creating new http request here")
+		log.Fatalf("Error: %s", err)
+	}
+
+	decodeError := json.NewDecoder(res.Body).Decode(&response)
+	if decodeError != nil {
+		log.Fatalf("Error: %s", err)
+	}
+
+	return response.VC
 }
 
 /*
@@ -193,7 +245,15 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(updatedBody))
 	if err != nil {
 		fmt.Println("problem creating new http request")
+		return
 	}
+
+	reachedURL, err := net.DialTimeout("tcp", replicaIP, (1 * time.Second))
+	if err != nil {
+		fmt.Println(replicaIP, " is down! didnt reply within 2 seconds")
+		return
+	}
+	reachedURL.Close()
 
 	// Forwarding the new request
 	resp, err := client.Do(req)

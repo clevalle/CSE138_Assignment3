@@ -199,6 +199,31 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println(replicaIP, " is down due to: ", err)
+
+		for _, repIP := range replicaArray {
+			if repIP != replicaIP {
+				viewBody := map[string]string{
+					"socket-address": replicaIP,
+				}
+				viewBodyJson, err := json.Marshal(viewBody)
+				if err != nil {
+					log.Fatalf("Error: %s", err)
+				}
+
+				viewReq, err := http.NewRequest("DELETE", fmt.Sprintf("http://%s/view", repIP), bytes.NewBuffer(viewBodyJson))
+
+				if err != nil {
+					fmt.Println("Error broadcasting view: delete to replicas")
+				}
+
+				res, err := client.Do(viewReq)
+				if err != nil {
+					fmt.Println("problem creating new http request for view delete broadcast")
+				}
+
+				defer res.Body.Close()
+			}
+		}
 		return
 	}
 	// Closing body of resp, typical after using Client.do()

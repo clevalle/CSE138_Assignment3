@@ -251,6 +251,42 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	reachedURL, err := net.DialTimeout("tcp", replicaIP, (1 * time.Second))
 	if err != nil {
 		fmt.Println(replicaIP, " is down! didnt reply within 2 seconds")
+		i := containsVal(replicaIP, replicaArray)
+		if i >= 0 {
+			replicaArray = removeVal(i, replicaArray)
+		}
+		fmt.Println("view is now ===", replicaArray)
+		for _, repIP := range replicaArray {
+			if repIP != replicaIP && repIP != sAddress {
+				fmt.Println("tell ", repIP, "that ", replicaIP, " is down")
+				viewBody := map[string]string{
+					"socket-address": replicaIP,
+				}
+				viewBodyJson, err := json.Marshal(viewBody)
+				if err != nil {
+					log.Fatalf("Error: %s", err)
+				}
+				reachedURL, err := net.DialTimeout("tcp", repIP, (2 * time.Second))
+				if err != nil {
+					fmt.Println("couldnt reach for DELETE", repIP, "err ===", err)
+					return
+				}
+				reachedURL.Close()
+				viewReq, err := http.NewRequest("DELETE", fmt.Sprintf("http://%s/view", repIP), bytes.NewBuffer(viewBodyJson))
+				if err != nil {
+					fmt.Println("Error broadcasting view: delete to replicas")
+					return
+				}
+
+				res, err := client.Do(viewReq)
+				if err != nil {
+					fmt.Println("problem creating new http request for view delete broadcast")
+					return
+				}
+				defer res.Body.Close()
+				fmt.Println("delete body == ", res.Body)
+			}
+		}
 		return
 	}
 	reachedURL.Close()
@@ -259,31 +295,6 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println(replicaIP, " is down due to: ", err)
-
-		for _, repIP := range replicaArray {
-			if repIP != replicaIP {
-				viewBody := map[string]string{
-					"socket-address": replicaIP,
-				}
-				viewBodyJson, err := json.Marshal(viewBody)
-				if err != nil {
-					log.Fatalf("Error: %s", err)
-				}
-
-				viewReq, err := http.NewRequest("DELETE", fmt.Sprintf("http://%s/view", repIP), bytes.NewBuffer(viewBodyJson))
-
-				if err != nil {
-					fmt.Println("Error broadcasting view: delete to replicas")
-				}
-
-				res, err := client.Do(viewReq)
-				if err != nil {
-					fmt.Println("problem creating new http request for view delete broadcast")
-				}
-
-				defer res.Body.Close()
-			}
-		}
 		return
 	}
 	// Closing body of resp, typical after using Client.do()
@@ -518,6 +529,7 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		response["causal-metadata"] = responseMetadata
 	}
 	fmt.Println("localvector after request is processed === ", localVector)
+	fmt.Println("view after kvs update === ", replicaArray)
 
 	// sending correct response / status code back to client
 	jsonResponse, err := json.Marshal(response)
@@ -589,6 +601,7 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	fmt.Println("view after view update === ", replicaArray)
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {
 		log.Fatalf("Error here: %s", err)

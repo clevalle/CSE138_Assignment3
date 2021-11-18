@@ -52,6 +52,15 @@ Citations:
    a lot when we were trying to figure out a way to determine whether or not a replica is down, so that we can update
    our view appropriately.
 
+6. https://stackoverflow.com/questions/43325288/golang-convert-interface-to-struct/43325450
+   Used this article to see how structs unpackage the informnation they were given by referencing the json value
+   given to them after the variable declaration in the struct itself 
+
+7. https://golang.org/src/net/http/status.go
+   Golang status code reference page 
+
+
+
 Mechanism Description:
 Describe how your system detects when a replica goes down:
 Our system can detect when a replica is down when we broadcast messages (and we only broadcast messages that we receive

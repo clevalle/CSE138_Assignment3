@@ -105,7 +105,7 @@ func main() {
 
 // Used to check if current replica has just died
 func didIDie() {
-	// sleep for a second, so that we can confirm
+	// sleep for a second, so that we can confirm other replicas have time to start up
 	time.Sleep(time.Second * 1)
 	// checking all elements of current view
 	for _, replicaIP := range viewArray {
@@ -183,7 +183,7 @@ func getReplicaKVS(replicaIP string) map[string]interface{} {
 	return response["KVS"].(map[string]interface{})
 }
 
-// Function used  tog et the vector clock of another replica
+// Function used  to get the vector clock of another replica
 func getReplicaVectorClock(replicaIP string) [3]int {
 	var response VectorClock
 
@@ -205,6 +205,11 @@ func getReplicaVectorClock(replicaIP string) [3]int {
 	return response.VC
 }
 
+//initial approach at fault testing our replicas
+//each replica wouldd have a go routine that would, every few seconds, ping each replica in view and make sure its alive
+//if not, it would remove the replica from view
+//this function creation was cut short when we realized that an easier solution would be to just let the replica itself do the heavy lifting
+//and work on its own to request updated data and put itself back in the replica view
 /*
 func aliveCheck() {
 	//give other replicas time to start up

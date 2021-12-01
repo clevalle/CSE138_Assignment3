@@ -106,7 +106,7 @@ func main() {
 // Used to check if current replica has just died
 func didIDie() {
 	// sleep for a second, so that we can confirm other replicas have time to start up
-	time.Sleep(time.Second * 1)
+	time.Sleep(time.Second * 2)
 	// checking all elements of current view
 	for _, replicaIP := range viewArray {
 		// if any in the view is not our address
@@ -192,7 +192,7 @@ func getReplicaVectorClock(replicaIP string) [3]int {
 	res, err := http.Get(fmt.Sprintf("http://%s/getVC", replicaIP))
 	if err != nil {
 		fmt.Println("problem creating new http request here")
-		log.Fatalf("Error: %s", err)
+		return [3]int{0, 0, 0}
 	}
 
 	// decoding the response of new request
